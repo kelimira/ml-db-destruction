@@ -71,6 +71,12 @@ python3 -m dbguard.story_demo              # ~15 s, one line per day
 python3 -m dbguard.story_demo --delay 0    # instant
 python3 -m dbguard.story_demo --delay 1    # slower, for presenting
 ```
+Add `--html story.html` to also write a self-contained split-view page: the day-by-day log on the left, live charts on the right (risk scores over time, and rows touched against the learned normal range), with a play button and a slider. No server or dependencies; open the file in any browser:
+```bash
+python3 -m dbguard.story_demo --delay 0 --html story.html && open story.html   # macOS; use xdg-open on Linux
+```
+![story demo](docs/story.png)
+
 Operator feedback: `det.approve(sql, rows)` teaches the profile a statement that was warned about but is legitimate. Destructive statements can never be approved.
 
 ### REPL Mode
