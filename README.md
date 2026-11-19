@@ -24,6 +24,9 @@ pip install .
 
 ## CLI Usage
 
+Install adds the `dbguard` command. `dbguard <mode>` equals `python -m dbguard <mode>`.
+The `demo` and `train` modes accept `--seed N` (default 0).
+
 ### Demo Mode
 Runs database setup, trains on safe baseline traffic, and executes the 14-statement benchmark scenario:
 ```bash
@@ -92,3 +95,16 @@ detector.learn("DELETE FROM orders WHERE id = 42", rows_affected=1)
    `Detector` and `BehaviourProfile` are not thread-safe. Use one instance per thread or synchronize with locks.
 9. **Console Sinks**:
    Console notification streams do not enforce rate limiting. Use dedicated log aggregation sinks in production.
+
+## Known Limitations
+- `DROP MATERIALIZED VIEW`, `DROP EXTENSION`, and `DROP POLICY` have no policy floor. Only the model score marks them `destructive`. A retrained model can lower that score.
+- `EXEC` and `EXECUTE` (T-SQL) score `safe`. `CALL` scores `warn`.
+- `DELETE ... WHERE id BETWEEN 0 AND 999999999` scores `safe` unless `estimated_rows` is known.
+- `train --out` follows symlinks. Only the JSONL alert sink blocks them.
+
+## Development
+Run the tests:
+```bash
+pip install pytest
+pytest -q
+```
