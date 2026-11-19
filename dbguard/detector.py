@@ -13,6 +13,7 @@ from dbguard.sqltok import SQLITE, Reading, Stmt, parse, readings_for, split_sta
 
 Level = Literal["safe", "warn", "destructive"]
 
+EXTREME_ROWS = 1000
 LEVEL_ORDER = {"safe": 0, "warn": 1, "destructive": 2}
 
 
@@ -35,6 +36,7 @@ class Detector:
         profile: BehaviourProfile | None = None,
         warn_at: float = 0.4,
         destructive_at: float = 0.7,
+        learning_target: int | None = None,
     ) -> None:
         if not (0.0 <= warn_at <= destructive_at <= 1.0):
             raise ValueError(
@@ -44,6 +46,10 @@ class Detector:
         self.destructive_at = destructive_at
         self.model = model if model is not None else train(seed=0)
         self.profile = profile if profile is not None else BehaviourProfile()
+        # Learning mode: profile signals (novelty, volume) are not scored until the profile has
+        # seen `learning_target` safe statements; policy rules and the model always apply.
+        self.learning_target = learning_target
+        self.mode: Literal["learning", "enforcing"] = "learning" if learning_target else "enforcing"
 
     def _score_stmt(self, stmt: Stmt, estimated_rows: int | None = None) -> Verdict:
         """Score a single parsed statement per §4.1."""
@@ -53,16 +59,28 @@ class Detector:
         rules = policy_rules(stmt)
 
         # 2-3. ML model prediction
-        x = extract(stmt, estimated_rows)
+        # A bounded statement whose volume the profile has learned as normal is not penalised
+        # for its row count (this is how learning turns a flagged workload into a safe one).
+        rows = estimated_rows
+        if (
+            self.mode == "enforcing"
+            and rows is not None
+            and stmt.has_where
+            and not stmt.tautology_where
+            and self.profile.volume_normal(stmt, rows)
+        ):
+            rows = None
+        x = extract(stmt, rows)
         score = self.model.predict_proba(x)
 
         # 4. Novelty penalty for DML / DDL
-        if stmt.kind in ("DML", "DDL"):
+        learning = self.mode == "learning"
+        if stmt.kind in ("DML", "DDL") and not learning:
             score = score + 0.15 * self.profile.novelty(stmt)
 
-        # 5. Volume outlier check
-        if estimated_rows is not None and self.profile.volume_outlier(stmt, estimated_rows):
-            score = max(score, self.warn_at)
+        # 5. Volume outlier check; an extreme one (>= 1000 rows) is treated as destructive
+        if not learning and estimated_rows is not None and self.profile.volume_outlier(stmt, estimated_rows):
+            score = max(score, self.destructive_at if estimated_rows >= EXTREME_ROWS else self.warn_at)
             reasons.append("volume_outlier")
 
         # 6. Policy floor
@@ -182,4 +200,20 @@ class Detector:
         for v in verdicts:
             self.profile.observe(v.stmt, rows_affected)
 
+        if self.mode == "learning" and self.profile.total_observed >= (self.learning_target or 0):
+            self.mode = "enforcing"
+        return True
+
+    def approve(self, sql: str, rows_affected: int | None) -> bool:
+        """Operator feedback: learn a statement that was warned about but is legitimate.
+
+        Destructive, unparsed and EXPLAIN statements can never be approved into the profile.
+        """
+        verdicts = self.analyze(sql, estimated_rows=rows_affected)
+        if not verdicts or any(
+            v.level == "destructive" or v.stmt.verb == "UNPARSED" or v.stmt.explain != "" for v in verdicts
+        ):
+            return False
+        for v in verdicts:
+            self.profile.observe(v.stmt, rows_affected)
         return True

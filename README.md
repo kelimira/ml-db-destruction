@@ -43,6 +43,36 @@ Run without blocking destructive statements:
 python -m dbguard demo --no-block
 ```
 
+### Learning Demo (train, then detect)
+Simulates a training period of normal traffic, then shows how verdicts change once the profile has learned what is normal:
+```bash
+python3 -m dbguard.learn_demo                      # 14 simulated days
+python3 -m dbguard.learn_demo --days 30            # longer training period
+python3 -m dbguard.learn_demo --keep-profile p.json  # keep the learned profile
+```
+It prints verdicts for the same statements before and after training. A bulk `UPDATE` touching 80 rows is `safe` on a cold start and `warn` (`volume_outlier`) after training.
+
+Learning mode and persistence in the Python API:
+```python
+from dbguard.detector import Detector
+from dbguard.profile import BehaviourProfile
+
+det = Detector(learning_target=500)   # learning: profile signals ignored; policy rules + model still apply
+det.learn(sql, rows_affected)         # call for traffic that ran fine; flips to "enforcing" after 500 safe statements
+det.profile.save("profile.json")      # survives restarts
+det = Detector(profile=BehaviourProfile.load("profile.json"))
+```
+Only statements judged safe are learned. Policy rules (`DROP`, `TRUNCATE`, unbounded `DELETE`/`UPDATE`) are floors that learning never lowers. Volume outliers of 1000+ rows are `destructive`; smaller ones are `warn`.
+
+### Story Demo (long-running, ongoing learning)
+Replays ~6 simulated weeks of one app's traffic, day by day: a learning period, steady state, a new feature appearing, a buggy deploy, a data-wipe attempt, a new legitimate weekly job that an operator approves, the same SQL at 3000 rows, and a known limitation (slow batched deletes).
+```bash
+python3 -m dbguard.story_demo              # ~15 s, one line per day
+python3 -m dbguard.story_demo --delay 0    # instant
+python3 -m dbguard.story_demo --delay 1    # slower, for presenting
+```
+Operator feedback: `det.approve(sql, rows)` teaches the profile a statement that was warned about but is legitimate. Destructive statements can never be approved.
+
 ### REPL Mode
 Interactive shell to evaluate statements against the detector and sandbox:
 ```bash
