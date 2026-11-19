@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 from collections import OrderedDict
+import json
 import math
+import os
 from dbguard.sqltok import Stmt
+
+MAX_PROFILE_SIZE = 8 * 1024 * 1024
 
 
 class KeyStats:
@@ -107,3 +111,52 @@ class BehaviourProfile:
             return True
 
         return False
+
+    @property
+    def total_observed(self) -> int:
+        return sum(s.count for s in self._store.values())
+
+    def to_json(self) -> str:
+        """Serialize learned state (LRU order preserved)."""
+        keys = [[v, t, s.count, s.row_count, s.mean, s.m2] for (v, t), s in self._store.items()]
+        return json.dumps({"version": 1, "max_keys": self.max_keys, "keys": keys})
+
+    @classmethod
+    def from_json(cls, text: str) -> "BehaviourProfile":
+        """Load and validate a profile; raises ValueError on any malformed input."""
+        if len(text.encode("utf-8")) > MAX_PROFILE_SIZE:
+            raise ValueError("Profile file exceeds 8 MiB limit")
+        try:
+            data = json.loads(text)
+            if data["version"] != 1 or set(data) != {"version", "max_keys", "keys"}:
+                raise ValueError("bad version or keys")
+            prof = cls(max_keys=int(data["max_keys"]))
+            if len(data["keys"]) > prof.max_keys:
+                raise ValueError("more keys than max_keys")
+            for verb, tbl, count, row_count, mean, m2 in data["keys"]:
+                nums = (count, row_count, mean, m2)
+                if not (isinstance(verb, str) and isinstance(tbl, str)) or any(
+                    isinstance(n, bool) or not isinstance(n, (int, float)) or not math.isfinite(n) for n in nums
+                ):
+                    raise ValueError("bad entry")
+                if count < 0 or row_count < 0 or row_count > count or m2 < 0:
+                    raise ValueError("inconsistent entry")
+                s = KeyStats()
+                s.count, s.row_count, s.mean, s.m2 = int(count), int(row_count), float(mean), float(m2)
+                prof._store[(verb, tbl)] = s
+        except (KeyError, TypeError, ValueError) as e:
+            raise ValueError(f"Invalid profile: {e}") from e
+        return prof
+
+    def save(self, path: str) -> None:
+        """Atomically write the profile (tmp file + rename) so a crash never leaves a torn file."""
+        tmp = f"{path}.tmp"
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(self.to_json())
+        os.replace(tmp, path)
+
+    @classmethod
+    def load(cls, path: str) -> "BehaviourProfile":
+        with open(path, encoding="utf-8") as f:
+            return cls.from_json(f.read(MAX_PROFILE_SIZE + 1))
