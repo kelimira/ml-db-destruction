@@ -17,8 +17,8 @@ from dbguard.sim import make_sandbox, run_statement
 
 # (label, sql, count_sql giving the rows it would touch, or None)
 PROBES = [
-    ("normal nightly cleanup", "DELETE FROM sessions WHERE expires_at <= 11",
-     "SELECT count(*) FROM sessions WHERE expires_at <= 11"),
+    ("normal nightly cleanup", "DELETE FROM sessions WHERE expires_at = 99",
+     "SELECT count(*) FROM sessions WHERE expires_at = 99"),
     ("bounded delete by id", "DELETE FROM sessions WHERE id = 42", None),
     ("bulk update, 80 rows", "UPDATE users SET email = 'x@y.com' WHERE id > 0",
      "SELECT count(*) FROM users WHERE id > 0"),
@@ -37,8 +37,8 @@ def _setup(conn) -> None:
     conn.executemany("INSERT INTO users (email) VALUES (?)", [(f"u{i}@x.com",) for i in range(80)])
     # 6000 live sessions (far-future expiry) = what a mass delete would wipe out
     conn.executemany("INSERT INTO sessions (user_id, expires_at) VALUES (?, 1000)", [(i % 50,) for i in range(6000)])
-    # 30 expired sessions waiting for tonight's cleanup (day 11)
-    conn.executemany("INSERT INTO sessions (user_id, expires_at) VALUES (?, 11)", [(i % 50,) for i in range(30)])
+    # 30 expired sessions waiting for tonight's cleanup (expiry 99, which training never deletes)
+    conn.executemany("INSERT INTO sessions (user_id, expires_at) VALUES (?, 99)", [(i % 50,) for i in range(30)])
 
 
 def _probe(conn, det: Detector) -> list[tuple[str, str, float, str]]:

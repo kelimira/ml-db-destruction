@@ -112,6 +112,15 @@ class BehaviourProfile:
 
         return False
 
+    def volume_normal(self, stmt: Stmt, rows: int) -> bool:
+        """True if every key has >= 5 row samples and `rows` is within mean + 3 std."""
+        keys = self._keys_for(stmt)
+        for key in keys:
+            s = self._store.get(key)
+            if s is None or s.row_count < 5 or rows > s.mean + 3.0 * max(s.std, 1.0):
+                return False
+        return bool(keys)
+
     @property
     def total_observed(self) -> int:
         return sum(s.count for s in self._store.values())

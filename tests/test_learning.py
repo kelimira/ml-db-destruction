@@ -59,3 +59,26 @@ class TestLearning(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestApprove(unittest.TestCase):
+    ARCHIVE = "UPDATE orders SET status = 'a' WHERE status = 'c'"
+
+    def _det(self) -> Detector:
+        det = Detector()
+        for i in range(7):
+            det.learn(f"UPDATE orders SET status = 's' WHERE id = {i}", 1)
+        return det
+
+    def test_approval_turns_warn_into_safe(self) -> None:
+        det = self._det()
+        self.assertEqual(det.analyze(self.ARCHIVE, 120)[0].level, "warn")
+        self.assertFalse(det.learn(self.ARCHIVE, 120))  # warn is never auto-learned
+        self.assertTrue(det.approve(self.ARCHIVE, 120))
+        self.assertEqual(det.analyze(self.ARCHIVE, 120)[0].level, "safe")
+        self.assertEqual(det.analyze(self.ARCHIVE, 5000)[0].level, "destructive")
+
+    def test_destructive_cannot_be_approved(self) -> None:
+        det = self._det()
+        self.assertFalse(det.approve("DELETE FROM orders", None))
+        self.assertFalse(det.approve("DROP TABLE orders", None))

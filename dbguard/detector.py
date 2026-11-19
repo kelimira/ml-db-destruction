@@ -59,7 +59,18 @@ class Detector:
         rules = policy_rules(stmt)
 
         # 2-3. ML model prediction
-        x = extract(stmt, estimated_rows)
+        # A bounded statement whose volume the profile has learned as normal is not penalised
+        # for its row count (this is how learning turns a flagged workload into a safe one).
+        rows = estimated_rows
+        if (
+            self.mode == "enforcing"
+            and rows is not None
+            and stmt.has_where
+            and not stmt.tautology_where
+            and self.profile.volume_normal(stmt, rows)
+        ):
+            rows = None
+        x = extract(stmt, rows)
         score = self.model.predict_proba(x)
 
         # 4. Novelty penalty for DML / DDL
@@ -191,4 +202,18 @@ class Detector:
 
         if self.mode == "learning" and self.profile.total_observed >= (self.learning_target or 0):
             self.mode = "enforcing"
+        return True
+
+    def approve(self, sql: str, rows_affected: int | None) -> bool:
+        """Operator feedback: learn a statement that was warned about but is legitimate.
+
+        Destructive, unparsed and EXPLAIN statements can never be approved into the profile.
+        """
+        verdicts = self.analyze(sql, estimated_rows=rows_affected)
+        if not verdicts or any(
+            v.level == "destructive" or v.stmt.verb == "UNPARSED" or v.stmt.explain != "" for v in verdicts
+        ):
+            return False
+        for v in verdicts:
+            self.profile.observe(v.stmt, rows_affected)
         return True

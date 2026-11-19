@@ -64,6 +64,15 @@ det = Detector(profile=BehaviourProfile.load("profile.json"))
 ```
 Only statements judged safe are learned. Policy rules (`DROP`, `TRUNCATE`, unbounded `DELETE`/`UPDATE`) are floors that learning never lowers. Volume outliers of 1000+ rows are `destructive`; smaller ones are `warn`.
 
+### Story Demo (long-running, ongoing learning)
+Replays ~6 simulated weeks of one app's traffic, day by day: a learning period, steady state, a new feature appearing, a buggy deploy, a data-wipe attempt, a new legitimate weekly job that an operator approves, the same SQL at 3000 rows, and a known limitation (slow batched deletes).
+```bash
+python3 -m dbguard.story_demo              # ~15 s, one line per day
+python3 -m dbguard.story_demo --delay 0    # instant
+python3 -m dbguard.story_demo --delay 1    # slower, for presenting
+```
+Operator feedback: `det.approve(sql, rows)` teaches the profile a statement that was warned about but is legitimate. Destructive statements can never be approved.
+
 ### REPL Mode
 Interactive shell to evaluate statements against the detector and sandbox:
 ```bash
