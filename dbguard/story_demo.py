@@ -29,6 +29,9 @@ class Story:
         self.stmts = 0
         self.alerts = 0
         self.log: list[str] = []
+        self.events: list[dict] = []  # for the HTML view
+        self.days: list[dict] = []
+        self.acts: list[dict] = []
         c = self.conn
         c.execute("CREATE TABLE users (id INTEGER PRIMARY KEY, email TEXT)")
         c.execute("CREATE TABLE orders (id INTEGER PRIMARY KEY, user_id INT, status TEXT)")
@@ -41,11 +44,16 @@ class Story:
     def count(self, table: str) -> int:
         return self.conn.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
 
-    def say(self, msg: str) -> None:
+    def say(self, msg: str, kind: str = "info", rows: int | None = None, score: float | None = None) -> None:
         print(f"      {msg}")
         self.log.append(f"day {self.day:>2}: {msg}")
+        self.events.append(dict(day=self.day, kind=kind, text=msg, rows=rows, score=score))
 
-    def do(self, sql: str, show: bool = False) -> tuple[str, float, tuple[str, ...], int]:
+    def act(self, title: str) -> None:
+        print(("\n" if self.acts else "") + title)
+        self.acts.append(dict(day=self.day + 1, title=title))
+
+    def do(self, sql: str, show: bool = False, est: int | None = None) -> tuple[str, float, tuple[str, ...], int]:
         """Run through the guard. Safe statements are learned; warn/destructive raise an alert."""
         before = self.conn.total_changes
         vs = run_statement(self.conn, self.det, sql, block=True, budget=self.budget)
@@ -60,7 +68,9 @@ class Story:
             tag = {"safe": "ok  ", "warn": "WARN", "destructive": "BLOCKED"}[worst.level]
             why = ",".join(worst.reasons) or "model score"
             self.say(f"[{tag}] {worst.score:.2f} {why:<28} {sql[:60]}"
-                     + (f"  (rows touched: {rows})" if worst.level != "destructive" else ""))
+                     + (f"  (rows touched: {rows})" if worst.level != "destructive" else ""),
+                     kind={"safe": "ok", "warn": "warn", "destructive": "blocked"}[worst.level],
+                     rows=est if (worst.level == "destructive" and est) else rows, score=worst.score)
         return worst.level, worst.score, worst.reasons, rows
 
     def score(self, sql: str, rows: int) -> float:
@@ -82,6 +92,13 @@ class Story:
         self.do(f"DELETE FROM sessions WHERE expires_at <= {self.day}")
 
     def header(self) -> None:
+        st = self.det.profile._store
+        band = {}
+        for name, key in (("sessions", ("DELETE", "sessions")), ("orders", ("UPDATE", "orders"))):
+            k = st.get(key)
+            band[name] = [k.mean, k.mean + 3 * max(k.std, 1.0)] if k and k.row_count >= 5 else None
+        self.days.append(dict(day=self.day, mode=self.det.mode, stmts=self.stmts, alerts=self.alerts,
+                              cleanup=self.score(CLEANUP, 34), archive=self.score(ARCHIVE, 120), band=band))
         print(f"Day {self.day:>2}  mode={self.det.mode:<10} stmts={self.stmts:<4} alerts={self.alerts:<3} "
               f"| score of known 34-row cleanup: {self.score(CLEANUP, 34):.2f}"
               f" | 120-row weekly archive: {self.score(ARCHIVE, 120):.2f}")
@@ -90,17 +107,17 @@ class Story:
     # -- the story ----------------------------------------------------------
     def run(self) -> None:
         mode0 = self.det.mode
-        print("Act 1 - LEARNING: normal traffic only. dbguard watches, builds its profile, ignores profile signals.")
+        self.act("Act 1 - LEARNING: normal traffic only. dbguard watches, builds its profile, ignores profile signals.")
         for self.day in range(1, 15):
             if self.day == 9:
-                print("\nAct 2 - STEADY STATE: same traffic, now enforcing and still learning.")
+                self.act("Act 2 - STEADY STATE: same traffic, now enforcing and still learning.")
             self.normal_day()
             self.header()
             if mode0 != self.det.mode:
-                self.say(f"*** learning target reached: mode {mode0} -> {self.det.mode} ***")
+                self.say(f"*** learning target reached: mode {mode0} -> {self.det.mode} ***", kind="mode")
                 mode0 = self.det.mode
 
-        print("\nAct 3 - SOMETHING NEW: a new feature ships. New (verb, table) pairs look novel, then become normal.")
+        self.act("Act 3 - SOMETHING NEW: a new feature ships. New (verb, table) pairs look novel, then become normal.")
         self.conn.execute("CREATE TABLE invoices (id INTEGER PRIMARY KEY, order_id INT, total INT)")
         for self.day in range(15, 21):
             self.normal_day()
@@ -110,7 +127,7 @@ class Story:
             self.say(f"novelty of INSERT invoices is fading: score {self.score('INSERT INTO invoices (order_id, total) VALUES (1, 10)', 1):.2f}"
                      " (0.15 bump at first sight, 0 once seen 10x)")
 
-        print("\nAct 4 - ANOMALIES: a bug and an attacker.")
+        self.act("Act 4 - ANOMALIES: a bug and an attacker.")
         self.day = 21
         self.normal_day()
         self.header()
@@ -121,14 +138,14 @@ class Story:
         self.header()
         s0 = self.count("sessions"), self.count("users"), self.count("orders")
         self.say("someone tries to wipe data:")
-        self.do("DELETE FROM sessions WHERE expires_at > 100")
+        self.do("DELETE FROM sessions WHERE expires_at > 100", est=6000)
         self.do("DELETE FROM users")
         self.do("TRUNCATE TABLE orders")
         self.do("/* x */ DROP TABLE orders")
         s1 = self.count("sessions"), self.count("users"), self.count("orders")
         self.say(f"rows (sessions, users, orders) before {s0} / after {s1} -> {'ALL INTACT' if s0 == s1 else 'DATA LOST'}")
 
-        print("\nAct 5 - A NEW LEGITIMATE JOB: weekly archive of ~120 orders. Unusual at first, an operator confirms it.")
+        self.act("Act 5 - A NEW LEGITIMATE JOB: weekly archive of ~120 orders. Unusual at first, an operator confirms it.")
         for self.day in range(23, 44):
             self.normal_day()
             if self.day in (28, 35, 42):
@@ -136,27 +153,28 @@ class Story:
                 self.header()
                 level, _, _, rows = self.do(ARCHIVE, show=True)
                 if level == "warn" and self.det.approve(ARCHIVE, rows):
-                    self.say(">>> operator reviews the alert and APPROVES it -> profile updated")
+                    self.say(">>> operator reviews the alert and APPROVES it -> profile updated", kind="approve", rows=rows)
                 elif level == "safe":
                     self.say(">>> no alert: the job is now part of normal behaviour")
             else:
                 self.header()
 
-        print("\nAct 6 - SAME SQL, DIFFERENT OUTCOME: the archive statement again, but 3000 rows are pending.")
+        self.act("Act 6 - SAME SQL, DIFFERENT OUTCOME: the archive statement again, but 3000 rows are pending.")
         self.day = 44
         self.conn.executemany("INSERT INTO orders (user_id, status) VALUES (1, 'completed')", [()] * 3000)
         self.header()
         self.say("identical statement text as the approved weekly job:")
-        self.do(ARCHIVE, show=True)
+        self.do(ARCHIVE, show=True, est=3000)
         self.say(f"orders still 'completed' (untouched): {self.conn.execute("SELECT count(*) FROM orders WHERE status = 'completed'").fetchone()[0]}")
 
-        print("\nAct 7 - HONEST LIMIT: slow, batched deletion. Each statement looks like the normal 34-row cleanup.")
+        self.act("Act 7 - HONEST LIMIT: slow, batched deletion. Each statement looks like the normal 34-row cleanup.")
         self.day = 45
         before = self.count("sessions")
         levels = [self.do(f"DELETE FROM sessions WHERE id BETWEEN {a} AND {a + 34}")[0]
                   for a in range(1, 35 * 40, 35)]
         lost = before - self.count("sessions")
         self.header()
+        self.events.append(dict(day=45, kind="ok", text="[ok  ] each of 40 batched deletes: 35 rows, all judged safe", rows=35, score=0.05))
         self.say(f"40 batched deletes -> verdicts {sorted(set(levels))}, sessions lost: {lost}. "
                  "Not caught: no single statement is anomalous. Needs a rate/total-volume check.")
 
@@ -171,8 +189,14 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--delay", type=float, default=0.3, help="seconds to pause per simulated day (0 = instant)")
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--html", metavar="PATH", help="also write a self-contained split-view HTML visualisation")
     a = ap.parse_args()
-    Story(a.seed, a.delay).run()
+    s = Story(a.seed, a.delay)
+    s.run()
+    if a.html:
+        from dbguard.story_html import write_html
+        write_html(s, a.html)
+        print(f"\nVisualisation written to {a.html} (open it in a browser)")
     return 0
 
 
