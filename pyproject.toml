@@ -16,3 +16,8 @@ classifiers = [
 
 [project.scripts]
 dbguard = "dbguard.sim:main"
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+

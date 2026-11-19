@@ -7,7 +7,11 @@ from dbguard.features import FEATURE_NAMES
 from dbguard.model import LogisticModel
 from dbguard.profile import BehaviourProfile
 from dbguard.sqltok import parse
-from tests.adversarial import ADVERSARIAL_CASES
+try:
+    from tests.adversarial import ADVERSARIAL_CASES
+except ImportError:
+    from adversarial import ADVERSARIAL_CASES
+
 
 
 class TestDetector(unittest.TestCase):
